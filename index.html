@@ -576,11 +576,58 @@ body.menu-aberto .burger i:nth-child(3){top:11px;transform:rotate(-45deg);backgr
 .holofote-seletor i:first-child{bottom:100%}
 .holofote-seletor i:last-child{top:100%}
 
+/* ---------- coluna vertical com parallax (só no celular) ----------
+   A lista é repetida até a coluna passar da altura do quadro, então o
+   retorno não tem emenda. Cada foto desliza contra o movimento da fileira,
+   e é essa diferença de velocidade que dá a sensação de profundidade. */
+.colunav{
+  display:none;position:relative;width:100%;height:70vh;max-height:560px;
+  overflow:hidden;background:var(--preto);
+  cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;
+}
+.colunav:active{cursor:grabbing}
+/* as bordas somem no fundo: a fileira entra e sai sem corte seco */
+.colunav::before,.colunav::after{
+  content:"";position:absolute;left:0;right:0;height:64px;z-index:3;pointer-events:none;
+}
+.colunav::before{top:0;background:linear-gradient(rgba(10,9,8,.95),transparent)}
+.colunav::after{bottom:0;background:linear-gradient(to top,rgba(10,9,8,.95),transparent)}
+.colunav-linha{
+  position:absolute;top:0;left:0;width:100%;
+  display:flex;align-items:center;justify-content:center;
+  will-change:transform;
+}
+.colunav-quadro{
+  position:relative;flex-shrink:0;overflow:hidden;cursor:pointer;
+  border:1px solid var(--linha-suave);background:var(--carvao);
+}
+.colunav-quadro img{
+  display:block;width:100%;height:100%;object-fit:cover;
+  will-change:transform;pointer-events:none;
+}
+.colunav-legenda{
+  position:absolute;left:0;right:0;bottom:0;z-index:2;pointer-events:none;
+  padding:52px 18px 16px;opacity:0;will-change:opacity;
+  background:linear-gradient(to top,rgba(10,9,8,.92),transparent);
+}
+.colunav-legenda span{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:-.02em;
+  text-transform:uppercase;color:var(--ouro);
+}
+.colunav-legenda b{
+  display:block;font-family:var(--serif);font-size:1.25rem;font-weight:500;color:var(--branco);
+}
+@media (prefers-reduced-motion:reduce){
+  .colunav-quadro img{transform:none!important}
+}
+
 /* no celular a faixa sangra até as bordas: ganha os 56px do respiro lateral,
    o que deixa a foto aberta maior e a lâmina fechada num alvo de toque
    confortável em vez do mínimo */
 @media (max-width:760px){
-  .holofote{margin-left:-28px;margin-right:-28px;width:calc(100% + 56px)}
+  /* o acordeão sai de cena e entra a coluna */
+  .holofote{display:none}
+  .colunav{display:block;margin-left:-28px;margin-right:-28px;width:calc(100% + 56px)}
   .holofote-legenda{padding:48px 20px 18px}
   .holofote-legenda b{font-size:1.15rem}
 }
@@ -1149,10 +1196,13 @@ footer{background:var(--preto-2);border-top:1px solid var(--linha-suave);padding
         <p class="galeria-titulo"><b id="galeriaNome">Ensaios</b><span id="galeriaQtd">3 fotos</span></p>
       </div>
 
-      <!-- lâminas: uma abre, as outras deslizam para dar lugar -->
+      <!-- computador: lâminas em acordeão -->
       <div class="holofote" id="holofote">
         <div class="holofote-palco" id="holofotePalco"></div>
       </div>
+
+      <!-- celular: coluna vertical com parallax -->
+      <div class="colunav" id="colunav"></div>
 
       <p class="parede-dica" id="holofoteDica">
         <svg viewBox="0 0 24 24" width="15" height="15"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/></svg>
@@ -1599,7 +1649,7 @@ footer{background:var(--preto-2);border-top:1px solid var(--linha-suave);padding
 
     caixaCats.hidden = true;
     galeria.hidden = false;
-    montarHolofote(listaAtual);
+    montarGaleria(listaAtual);
 
     var alvo = secaoPortfolio.getBoundingClientRect().top + window.scrollY - 90;
     window.scrollTo({ top: alvo, behavior: 'smooth' });
@@ -2022,6 +2072,239 @@ footer{background:var(--preto-2);border-top:1px solid var(--linha-suave);padding
     if (galeria.hidden || !laminas.length) return;
     clearTimeout(remedirHolofote);
     remedirHolofote = setTimeout(posicionar, 150);
+  });
+
+
+  /* ---------- coluna vertical com parallax (só no celular) ----------
+     A fileira é deslocada por arrasto e o valor é perseguido com suavização.
+     Cada foto anda contra o movimento da fileira, e a escala compensa esse
+     deslocamento para o recorte nunca abrir buraco na borda. A legenda sobe
+     numa faixa do percurso, quando a foto já está sendo olhada. */
+  var colunav = document.getElementById('colunav');
+
+  var DERIVA = 0.30;        /* deslocamento da foto, fração da altura da fileira */
+  var FOLGA = 0.02;         /* sobra na escala, para o recorte não abrir na ponta */
+  var FADE_INI = 0.15, FADE_FIM = 0.42;
+
+  /* mesmas escalas 0–10 do componente, já resolvidas em unidades reais */
+  var ESPACO = 1.5, PARALLAX = 6, SENSIBILIDADE = 5, SUAVIZACAO = 7;
+  var vaoCol = ESPACO * 20;
+  var suavCol = 0.15 - (SUAVIZACAO / 10) * 0.13;
+  var derivaCol = PARALLAX / 10;
+  var multArrasto = 0.6 + (SENSIBILIDADE / 10) * 1.8;
+  var multRoda = 0.4 + (SENSIBILIDADE / 10) * 1.2;
+
+  var linhasCol = [];
+  var listaColuna = [];
+  var alvoCol = 0, atualCol = 0;
+  var spanCol = 0, quadroCol = 0, alturaCartao = 0;
+  var loopCol = 0, ultimoQuadro = 0;
+
+  function envolverCol(v, span) {
+    return ((v % span) + span) % span;
+  }
+
+  function montarColuna(lista) {
+    listaColuna = lista;
+    colunav.textContent = '';
+    linhasCol = [];
+    alvoCol = atualCol = 0;
+    if (!lista.length) return;
+
+    quadroCol = colunav.offsetHeight || 0;
+    var larguraCartao = Math.min(300, (colunav.offsetWidth || 320) - 40);
+    alturaCartao = Math.round(larguraCartao * 1.25);
+    var passo = alturaCartao + vaoCol;
+
+    /* repete a lista até a coluna passar do quadro mais uma fileira inteira,
+       senão uma fileira reaparecia dentro da área visível */
+    var precisa = quadroCol + alturaCartao * 2;
+    var repeticoes = Math.max(1, Math.ceil(precisa / (lista.length * passo)));
+    var total = lista.length * repeticoes;
+
+    for (var i = 0; i < total; i++) {
+      var dado = lista[i % lista.length];
+
+      var linha = document.createElement('div');
+      linha.className = 'colunav-linha';
+      linha.style.height = alturaCartao + 'px';
+
+      var quadro = document.createElement('figure');
+      quadro.className = 'colunav-quadro';
+      quadro.style.width = larguraCartao + 'px';
+      quadro.style.height = alturaCartao + 'px';
+
+      var img = document.createElement('img');
+      img.src = dado.src;
+      img.alt = dado.alt;
+      img.draggable = false;
+      if (dado.w) { img.width = dado.w; img.height = dado.h; }
+      img.style.objectPosition = dado.foco;
+
+      var legenda = document.createElement('figcaption');
+      legenda.className = 'colunav-legenda';
+      var cat = document.createElement('span');
+      cat.textContent = ('0' + ((i % lista.length) + 1)).slice(-2) + '/ ' + dado.catNome;
+      var titulo = document.createElement('b');
+      titulo.textContent = dado.titulo;
+      legenda.appendChild(cat);
+      legenda.appendChild(titulo);
+
+      quadro.appendChild(img);
+      quadro.appendChild(legenda);
+      linha.appendChild(quadro);
+      colunav.appendChild(linha);
+
+      linhasCol.push({
+        no: linha, img: img, legenda: legenda,
+        topo: i * passo, indice: i % lista.length
+      });
+    }
+
+    spanCol = total * passo;
+    desenharCol();
+    ligarLoopCol();
+  }
+
+  function desenharCol() {
+    if (!linhasCol.length || spanCol <= 0 || quadroCol <= 0) return;
+
+    for (var i = 0; i < linhasCol.length; i++) {
+      var l = linhasCol[i];
+
+      /* a fileira vive em [-altura, span - altura): uma fileira de folga
+         acima do quadro, para nada aparecer já dentro da vista */
+      var pos = envolverCol(l.topo - atualCol + alturaCartao, spanCol) - alturaCartao;
+      l.no.style.transform = 'translate3d(0,' + pos.toFixed(2) + 'px,0)';
+
+      /* 0 quando a fileira encosta na base do quadro, 1 quando sai por cima */
+      var progresso = Math.min(1, Math.max(0,
+        (quadroCol - pos) / (quadroCol + alturaCartao)));
+
+      var amp = DERIVA * derivaCol;
+      var escala = 1 + amp * 2 + FOLGA;
+      var desloc = (progresso - 0.5) * 2 * amp * alturaCartao;
+      l.img.style.transform =
+        'translate3d(0,' + desloc.toFixed(2) + 'px,0) scale(' + escala.toFixed(4) + ')';
+
+      var t = Math.min(1, Math.max(0,
+        (progresso - FADE_INI) / (FADE_FIM - FADE_INI)));
+      l.legenda.style.opacity = t.toFixed(3);
+    }
+  }
+
+  function passoCol(agora) {
+    loopCol = requestAnimationFrame(passoCol);
+    var dt = ultimoQuadro ? Math.min((agora - ultimoQuadro) / 1000, 0.1) : 1 / 60;
+    ultimoQuadro = agora;
+    if (!linhasCol.length || spanCol <= 0) return;
+
+    /* mantém os dois valores dentro de um span, para não perder precisão */
+    if (atualCol > spanCol || atualCol < -spanCol) {
+      var salto = Math.trunc(atualCol / spanCol) * spanCol;
+      atualCol -= salto;
+      alvoCol -= salto;
+    }
+
+    var k = 1 - Math.pow(1 - suavCol, dt * 60);
+    atualCol += (alvoCol - atualCol) * k;
+    desenharCol();
+  }
+
+  function ligarLoopCol() {
+    if (loopCol) return;
+    ultimoQuadro = 0;
+    loopCol = requestAnimationFrame(passoCol);
+  }
+  function desligarLoopCol() {
+    if (!loopCol) return;
+    cancelAnimationFrame(loopCol);
+    loopCol = 0;
+  }
+
+  /* arrasto: puxar para cima traz a coluna para cima */
+  var ponteiroCol = null, ultimoY = 0, andouCol = 0;
+
+  colunav.addEventListener('pointerdown', function (e) {
+    if (ponteiroCol !== null) return;
+    ponteiroCol = e.pointerId;
+    ultimoY = e.clientY;
+    andouCol = 0;
+    try { colunav.setPointerCapture(e.pointerId); } catch (err) {}
+    ligarLoopCol();
+  });
+
+  colunav.addEventListener('pointermove', function (e) {
+    if (ponteiroCol !== e.pointerId) return;
+    var d = e.clientY - ultimoY;
+    ultimoY = e.clientY;
+    andouCol += Math.abs(d);
+    alvoCol -= d * multArrasto;
+  });
+
+  function soltarCol(e) {
+    if (ponteiroCol !== e.pointerId) return;
+    ponteiroCol = null;
+    try { colunav.releasePointerCapture(e.pointerId); } catch (err) {}
+
+    /* toque curto amplia; arrasto não */
+    if (andouCol < 8) {
+      var quadro = e.target.closest ? e.target.closest('.colunav-quadro') : null;
+      if (quadro) {
+        for (var i = 0; i < linhasCol.length; i++) {
+          if (linhasCol[i].no.contains(quadro)) {
+            abrirLightbox(listaColuna, linhasCol[i].indice);
+            break;
+          }
+        }
+      }
+    }
+  }
+  colunav.addEventListener('pointerup', soltarCol);
+  colunav.addEventListener('pointercancel', soltarCol);
+
+  colunav.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    alvoCol += e.deltaY * multRoda;
+    ligarLoopCol();
+  }, { passive: false });
+
+  /* o laço não roda com a aba escondida */
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) desligarLoopCol();
+    else if (linhasCol.length && !galeria.hidden) ligarLoopCol();
+  });
+
+  function ehCelular() {
+    return window.matchMedia('(max-width:760px)').matches;
+  }
+
+  /* uma galeria por vez: acordeão no computador, coluna no celular */
+  function montarGaleria(lista) {
+    desligarLoopCol();
+    if (ehCelular()) {
+      montarColuna(lista);
+      if (dicaHolofote) {
+        dicaHolofote.querySelector('span').textContent =
+          'Arraste para percorrer · toque para ampliar';
+      }
+    } else {
+      linhasCol = [];
+      colunav.textContent = '';
+      montarHolofote(lista);
+    }
+  }
+
+  var trocaLargura;
+  window.addEventListener('resize', function () {
+    clearTimeout(trocaLargura);
+    trocaLargura = setTimeout(function () {
+      if (galeria.hidden || !listaAtual.length) return;
+      var temColuna = linhasCol.length > 0;
+      /* mudou de faixa de tela: remonta na versão certa */
+      if (ehCelular() !== temColuna) montarGaleria(listaAtual);
+      else if (temColuna) montarColuna(listaAtual);
+    }, 200);
   });
 
   /* ---------- ver mais fotos ---------- */
